@@ -2,6 +2,7 @@ package helpers
 
 import (
 	"context"
+	"fmt"
 	"github.com/Jayleonc/golang-jwt-project/database"
 	"github.com/golang-jwt/jwt/v4"
 	"go.mongodb.org/mongo-driver/bson"
@@ -17,7 +18,7 @@ type SignedDetails struct {
 	Email     string
 	FirstName string
 	LastName  string
-	Uid       string
+	UserId    string
 	UserType  string
 	jwt.RegisteredClaims
 }
@@ -31,7 +32,7 @@ func GenerateAllTokens(email string, firstName string, lastName string, userType
 		Email:     email,
 		FirstName: firstName,
 		LastName:  lastName,
-		Uid:       uid,
+		UserId:    uid,
 		UserType:  userType,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Local().Add(time.Hour * time.Duration(24))),
@@ -77,4 +78,31 @@ func UpdateAllTokens(signedToken string, signedRefreshToken string, userId strin
 		return
 	}
 	return
+}
+
+func ValidateToken(signedToken string) (claims *SignedDetails, msg string) {
+	token, err := jwt.ParseWithClaims(
+		signedToken,
+		&SignedDetails{},
+		func(token *jwt.Token) (interface{}, error) {
+			return []byte(SecretKey), nil
+		},
+	)
+	if err != nil {
+		msg = err.Error()
+		return
+	}
+	claims, ok := token.Claims.(*SignedDetails)
+	if !ok {
+		msg = fmt.Sprintf("the token is invalid")
+		msg = err.Error()
+		return
+	}
+	nowDate := jwt.NewNumericDate(time.Now().Local())
+	if claims.ExpiresAt.Unix() < nowDate.Unix() {
+		msg = fmt.Sprintf("token is expired")
+		msg = err.Error()
+		return
+	}
+	return claims, msg
 }

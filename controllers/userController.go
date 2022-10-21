@@ -10,6 +10,7 @@ import (
 	"github.com/go-playground/validator/v10"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 	"golang.org/x/crypto/bcrypt"
 	"log"
 	"net/http"
@@ -30,8 +31,8 @@ func HashPassword(password string) string {
 	return string(bytes)
 }
 
-func VerifyPassword(userPassword string, foundUserPassword string) (bool, string) {
-	err := bcrypt.CompareHashAndPassword([]byte(userPassword), []byte(userPassword))
+func VerifyPassword(userPassword string, hashPassword string) (bool, string) {
+	err := bcrypt.CompareHashAndPassword([]byte(hashPassword), []byte(userPassword))
 	check := true
 	msg := ""
 	if err != nil {
@@ -45,6 +46,7 @@ func VerifyPassword(userPassword string, foundUserPassword string) (bool, string
 // todo Refactor this function, cause it is long long long
 func Signup() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		log.Println("Signup start")
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
 		var user models.User
 		if err := c.BindJSON(&user); err != nil {
@@ -109,7 +111,7 @@ func Login() gin.HandlerFunc {
 		var foundUser models.User
 
 		if err := c.BindJSON(&user); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"BindJson error": err.Error()})
 			defer cancel()
 			return
 		}
@@ -119,8 +121,9 @@ func Login() gin.HandlerFunc {
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "email or password is incorrect"})
 		}
+		hashPassword := *foundUser.Password
 
-		passwordIsValid, msg := VerifyPassword(*user.Password, *foundUser.Password)
+		passwordIsValid, msg := VerifyPassword(*user.Password, hashPassword)
 		defer cancel()
 		if !passwordIsValid {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": msg})
@@ -136,7 +139,7 @@ func Login() gin.HandlerFunc {
 		// Decode(&foundUser): 使用找到的用户数据，构造 foundUser
 		err = userCollection.FindOne(ctx, bson.M{"user_id": foundUser.UserId}).Decode(&foundUser)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"FindOne error": err.Error()})
 			return
 		}
 		// 登陆：找到用户数据后，打开这个用户的数据，即返回用户数据，交给前端处理
@@ -153,10 +156,46 @@ func GetUsers() gin.HandlerFunc {
 		}
 		var ctx, cancel = context.WithTimeout(context.Background(), 100*time.Second)
 		recordPerPage, err := strconv.Atoi(c.Query("recordPerPage"))
-		if err != nil || recordPerPage < 1{
+		if err != nil || recordPerPage < 1 {
 			recordPerPage = 10
-			return
 		}
+		page, err1 := strconv.Atoi(c.Query("page"))
+		if err1 != nil || page < 1 {
+			page = 1
+		}
+
+		startIndex := (page - 1) * recordPerPage
+		startIndex, err = strconv.Atoi(c.Query("startIndex"))
+
+		matchStage := bson.D{{"$match", bson.D{{}}}}
+		groupStage := bson.D{{
+			"$group", bson.D{
+				{"_id", bson.D{{"_id", "null"}}},
+				{"total_count", bson.D{{"$sum", 1}}},
+				{"data", bson.D{{"$push", "$$ROOT"}}},
+			}}}
+
+		projectStage := bson.D{{
+			"$project", bson.D{{"_id", 0},
+				{"total_count", 1},
+				{"user_items", bson.D{
+					{"$slice", []interface{}{"$data", startIndex, recordPerPage}},
+				}},
+			}}}
+
+		result, err := userCollection.Aggregate(ctx, mongo.Pipeline{
+			matchStage, groupStage, projectStage,
+		})
+		defer cancel()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "error occured while listing user items"})
+		}
+		var allUsers []bson.M
+		if err = result.All(ctx, &allUsers); err != nil {
+			log.Fatal(err)
+		}
+		c.JSON(http.StatusOK, allUsers[0])
+
 	}
 }
 
